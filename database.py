@@ -130,3 +130,55 @@ def create_test_tournaments():
                            VALUES (?, ?, ?, ?)
                            ''', tournaments)
         conn.commit()
+
+def get_tournament_info(t_id):
+    """Получает детальную информацию о конкретном турнире по ID"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT name, date_text, time_text FROM tournaments WHERE id = ?', (t_id,))
+        return cursor.fetchone() # Вернет кортеж (name, date, time)
+
+
+# --- АДМИНСКИЕ ФУНКЦИИ ---
+
+def get_registrations_for_admin(tournament_id):
+    """Специальная функция для админки: возвращает ник и ID пользователя"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.nickname, u.user_id FROM users u 
+            JOIN registrations r ON u.user_id = r.user_id 
+            WHERE r.tournament_id = ?
+        ''', (tournament_id,))
+        return cursor.fetchall()
+
+def get_all_users():
+    """Возвращает список всех игроков для админки"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT nickname, rating, user_id FROM users ORDER BY rating DESC')
+        return cursor.fetchall()
+
+def update_rating_by_nickname(nickname, points):
+    """Прибавляет или вычитает очки рейтинга"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET rating = rating + ? WHERE nickname = ?', (points, nickname))
+        conn.commit()
+        return cursor.rowcount > 0 # Вернет True, если ник найден
+
+def delete_registration(user_id, tournament_id):
+    """Удаляет запись пользователя с турнира (освобождает место)"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM registrations WHERE user_id = ? AND tournament_id = ?',
+                       (user_id, tournament_id))
+        conn.commit()
+
+def update_tournament_limit(t_id, new_limit):
+    """Меняет количество мест в турнире"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE tournaments SET max_slots = ? WHERE id = ?', (new_limit, t_id))
+        conn.commit()
+

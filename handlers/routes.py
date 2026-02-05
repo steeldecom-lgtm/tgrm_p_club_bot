@@ -14,10 +14,33 @@ router = Router()
 from database import (
     save_user, get_user, get_active_tournaments,
     get_slots_info, get_players_on_tournament,
-    is_user_registered, register_user_for_event
+    is_user_registered, register_user_for_event,
+    get_tournament_info, update_rating_by_nickname,
+    delete_registration,
+    get_registrations_for_admin
 )
 
+import os
+from forms.admin import AdminState
 
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+
+# Простая проверка на админа
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+@router.message(Command("admin"))
+async def admin_main(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Начислить рейтинг", callback_data="admin_rating")],
+        [InlineKeyboardButton(text="🚫 Отменить регистрацию", callback_data="admin_cancel_list")],
+        [InlineKeyboardButton(text="⚙️ Управление турнирами", callback_data="admin_events")]
+    ])
+    await message.answer("🛠 <b>Панель администратора</b>\nВыберите действие:",
+                         parse_mode="HTML", reply_markup=keyboard)
 
 # Список  Клавиатур
 
@@ -33,6 +56,8 @@ def get_dynamic_tournaments_keyboard():
 
     buttons.append([InlineKeyboardButton(text='Вернуться назад', callback_data='back_to_start')])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 
 #def get_main_reply_keyboard():
 #    keyboard = ReplyKeyboardMarkup(
@@ -149,19 +174,19 @@ async def cancel_form(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Анкета отклонена")
 
-#Выбор турнира для регистрации
+#----------Выбор турнира для регистрации---------------
 
 @router.callback_query(F.data == "registration")
 async def proces_registration(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    user = get_user(user_id)  # Наша функция из database.py
+    user = get_user(user_id)  # функция из database.py
 
     if user:
         # ПОЛЬЗОВАТЕЛЬ УЖЕ ЕСТЬ В БАЗЕ
         await callback.message.answer(
             "<b>С возвращением!</b>\nВыберите турнир для регистрации:",
             parse_mode="HTML",
-            reply_markup=get_dynamic_tournaments_keyboard()  # Новая клавиатура
+            reply_markup=get_dynamic_tournaments_keyboard()  # Новая динамическая клавиатура
         )
     else:
         # НОВЫЙ ПОЛЬЗОВАТЕЛЬ
@@ -176,17 +201,22 @@ async def proces_registration(callback: CallbackQuery, state: FSMContext):
 # Когда пользователь нажмет на кнопку турнира (например, reg_event_1), нужно показать ему карточку этого турнира со списком игроков и кнопкой «Да, всё верно».
 @router.callback_query(F.data.startswith("reg_event_"))
 async def info_event_registration(callback: CallbackQuery):
-    event_id = int(callback.data.split("_")[2])  # Достаем ID из callback_data
+    event_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
+
+    # 1. Получаем данные о турнире
+    t_name, t_date, t_time = get_tournament_info(event_id)
+    t_full_info = f"{t_date} — {t_name}, {t_time}"
 
     # ПРОВЕРКА: Записан ли уже?
     if is_user_registered(user_id, event_id):
-        user_data = get_user(user_id)  # (name, nickname, level, rating)
+        user_data = get_user(user_id)
         players = get_players_on_tournament(event_id)
         players_list = "\n".join([f"🔹 {p}" for p in players])
 
         text = (
-            f"📍 <b>{user_data[0]}, вы уже записаны на этот турнир!</b>\n\n"
+            f"📍 <b>{user_data[0]}, вы уже записаны на этот турнир {t_full_info}!</b>\n"
+            f"Увидимся за игровым столом!\n\n"
             f"<b>Ваша карточка:</b>\n"
             f"Ник: {user_data[1]} | Рейтинг: {user_data[3]}\n\n"
             f"<b>Список всех участников:</b>\n{players_list}"
@@ -224,13 +254,22 @@ async def confirm_registration(callback: CallbackQuery):
     event_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
 
+    # Получаем данные о турнире для сообщения
+    t_name, t_date, t_time = get_tournament_info(event_id)
+    t_full_info = f"{t_date} — {t_name}, {t_time}"
+
     success = register_user_for_event(user_id, event_id)
 
     if success:
-        await callback.message.answer("🎉 Вы успешно записаны на турнир! Ждем вас в клубе.",
-                                      reply_markup=get_main_inline_keyboard())
+        await callback.message.answer(
+            f"🎉 <b>Вы успешно записаны на турнир!</b>\n"
+            f"📍 {t_full_info}\n\n"
+            f"Ждем вас в клубе.",
+            parse_mode="HTML",
+            reply_markup=get_main_inline_keyboard()
+        )
     else:
-        await callback.message.answer("Произошла ошибка или вы уже записаны.")
+        await callback.message.answer("Произошла ошибка или вы уже записаны на этот турнир.")
 
     await callback.answer()
 
@@ -338,6 +377,93 @@ async def start(message: Message):
 #@router.message(Command("about"))
 #async def about(message: Message):
 #    await message.answer(f".твой ник: {message.from_user.first_name}")
+
+# ____------Админские дела -------__
+
+# --- ЛОГИКА НАЧИСЛЕНИЯ РЕЙТИНГА ---
+
+@router.callback_query(F.data == "admin_rating")
+async def admin_rating_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Введите ник игрока и количество баллов через пробел.\n"
+                                  "Например: <code>PokerKing 50</code> или <code>Sasha -20</code>",
+                                  parse_mode="HTML")
+    await state.set_state(AdminState.wait_for_rating_data)
+    await callback.answer()
+
+
+@router.message(AdminState.wait_for_rating_data)
+async def admin_rating_process(message: Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            raise ValueError
+
+        nickname = parts[0]
+        points = int(parts[1])
+
+        success = update_rating_by_nickname(nickname, points)
+
+        if success:
+            await message.answer(f"✅ Рейтинг игрока <b>{nickname}</b> изменен на {points}!", parse_mode="HTML")
+        else:
+            await message.answer("❌ Игрок с таким ником не найден.")
+    except ValueError:
+        await message.answer("Ошибка! Введите данные в формате: <code>Ник Очки</code>")
+
+    await state.clear()
+
+
+# --- ЛОГИКА ОТМЕНЫ РЕГИСТРАЦИИ ---
+
+@router.callback_query(F.data == "admin_cancel_list")
+async def admin_cancel_select_event(callback: CallbackQuery):
+    # Показываем список турниров, чтобы выбрать, где удалять игрока
+    await callback.message.answer("Выберите турнир, чтобы увидеть список участников:",
+                                  reply_markup=get_admin_events_keyboard())
+    await callback.answer()
+
+
+def get_admin_events_keyboard():
+    tournaments = get_active_tournaments()
+    buttons = [[InlineKeyboardButton(text=f"👥 {t[1]} ({t[2]})", callback_data=f"admin_view_regs_{t[0]}")]
+               for t in tournaments]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data.startswith("admin_view_regs_"))
+async def admin_view_registrations(callback: CallbackQuery):
+    t_id = int(callback.data.split("_")[3])
+
+    # Вызываем нашу новую функцию из database.py
+    players = get_registrations_for_admin(t_id)
+
+    if not players:
+        await callback.message.answer("На этот турнир пока никто не записан.")
+        return await callback.answer()
+
+    buttons = []
+    for nick, u_id in players:
+        buttons.append([InlineKeyboardButton(
+            text=f"❌ Удалить {nick}",
+            callback_data=f"adm_del_{u_id}_{t_id}"
+        )])
+
+    await callback.message.answer(
+        "Участники турнира. Нажмите кнопку, чтобы снять игрока с регистрации:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm_del_"))
+async def admin_delete_confirm(callback: CallbackQuery):
+    data = callback.data.split("_")
+    u_id = int(data[2])
+    t_id = int(data[3])
+
+    delete_registration(u_id, t_id)
+    await callback.message.answer("✅ Регистрация отменена. Место освободилось.")
+    await callback.answer()
 
 @router.message()
 async def text_message(message: Message):
