@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import (
     Message,
@@ -22,10 +22,28 @@ from database import (
 )
 
 import os
+import datetime
 from forms.admin import AdminState, CreateTournamentState
+
+LOG_CHAT_ID = int(os.getenv("LOG_CHAT_ID"))
+
+async def log_admin_action(bot: Bot, admin_user, action_text):
+    """Отправляет отчет о действии админа в лог-канал"""
+    now = datetime.datetime.now().strftime("%d.%m %H:%M")
+    log_msg = (
+        f"🛠 <b>LOG: Действие админа</b>\n"
+        f"👤 Админ: {admin_user.first_name} (@{admin_user.username})\n"
+        f"🕒 Время: {now}\n"
+        f"⚡️ Действие: {action_text}"
+    )
+    await bot.send_message(LOG_CHAT_ID, log_msg, parse_mode="HTML")
 
 # Получаем строку из .env, разделяем по запятой и превращаем каждый элемент в int
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_ID").split(",")]
+
+
+
+# Список  Клавиатур
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -44,7 +62,7 @@ async def admin_main(message: Message):
     await message.answer("🛠 <b>Панель администратора</b>\nВыберите действие:",
                          parse_mode="HTML", reply_markup=keyboard)
 
-# Список  Клавиатур
+
 
 def get_dynamic_tournaments_keyboard():
     tournaments = get_active_tournaments()  # Берем из БД
@@ -436,7 +454,7 @@ async def admin_rating_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminState.wait_for_rating_data)
-async def admin_rating_process(message: Message, state: FSMContext):
+async def admin_rating_process(message: Message, state: FSMContext, bot: Bot):
     try:
         parts = message.text.split()
         if len(parts) < 2:
@@ -449,6 +467,8 @@ async def admin_rating_process(message: Message, state: FSMContext):
 
         if success:
             await message.answer(f"✅ Рейтинг игрока <b>{nickname}</b> изменен на {points}!", parse_mode="HTML")
+            # ЛОГИРУЕМ:
+            await log_admin_action(bot, message.from_user, f"Изменил рейтинг {nickname} на {points}")
         else:
             await message.answer("❌ Игрок с таким ником не найден.")
     except ValueError:
@@ -555,13 +575,16 @@ async def admin_edit_tournament_menu(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("confirm_delete_t_"))
-async def admin_delete_tournament_process(callback: CallbackQuery):
+async def admin_delete_tournament_process(callback: CallbackQuery, bot: Bot):
     t_id = int(callback.data.split("_")[3])
+    t_info = get_tournament_info(t_id)
 
     # Можно добавить еще одно окно "Вы уверены?", но для скорости сделаем сразу
     delete_tournament_from_db(t_id)
 
     await callback.message.answer("✅ Турнир и все записи на него успешно удалены.")
+    # ЛОГИРУЕМ:
+    await log_admin_action(bot, callback.from_user, f"УДАЛИЛ ТУРНИР: {t_info[0]} ({t_info[1]})")
     # Возвращаем админа к списку турниров
     await admin_events_list(callback)
     await callback.answer()
@@ -656,12 +679,14 @@ async def admin_add_event_time(message: Message, state: FSMContext):
 
 
 @router.message(CreateTournamentState.wait_for_slots)
-async def admin_add_event_finish(message: Message, state: FSMContext):
+async def admin_add_event_finish(message: Message, state: FSMContext, bot: Bot):
     if not message.text.isdigit():
         await message.answer("Ошибка! Введите число цифрами.")
         return
 
     data = await state.get_data()
+    # ЛОГИРУЕМ:
+    await log_admin_action(bot, message.from_user, f"СОЗДАЛ ТУРНИР: {data['new_t_name']} на {data['new_t_date']}")
 
     # Вызываем функцию БД
     add_new_tournament(
