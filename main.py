@@ -16,7 +16,7 @@ dp.include_router(router)
 async def main():
     bot = Bot(token=TOKEN)
     init_db()
-    create_test_tournaments()
+#    create_test_tournaments()  #Если активна, то при каждом перезапуске бота будет удалять турниры и создавать тестовые заново.
 
 
     print("Start..")

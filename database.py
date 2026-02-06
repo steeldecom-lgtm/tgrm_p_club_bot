@@ -182,3 +182,29 @@ def update_tournament_limit(t_id, new_limit):
         cursor.execute('UPDATE tournaments SET max_slots = ? WHERE id = ?', (new_limit, t_id))
         conn.commit()
 
+def update_tournament_name(t_id, new_name):
+    """Обновляет название турнира в базе данных"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE tournaments SET name = ? WHERE id = ?', (new_name, t_id))
+        conn.commit()
+
+def add_new_tournament(name, date, time, slots):
+    """Добавляет новый турнир в базу данных"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO tournaments (name, date_text, time_text, max_slots, is_active)
+            VALUES (?, ?, ?, ?, 1)
+        ''', (name, date, time, slots))
+        conn.commit()
+
+def delete_tournament_from_db(t_id):
+    """Полностью удаляет турнир и все записи на него"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        # 1. Сначала удаляем регистрации на этот турнир (связанные данные)
+        cursor.execute('DELETE FROM registrations WHERE tournament_id = ?', (t_id,))
+        # 2. Затем удаляем сам турнир
+        cursor.execute('DELETE FROM tournaments WHERE id = ?', (t_id,))
+        conn.commit()
